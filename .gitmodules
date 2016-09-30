@@ -1,0 +1,3 @@
+[submodule "FlyLIB"]
+	path = FlyLIB
+	url = git@github.com:toosyou/FlyLIB.git
