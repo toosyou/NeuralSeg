@@ -7,7 +7,7 @@
 #include <sys/types.h>
 #include "Brain.h"
 
-#define ADDRESS_NDB "/Users/toosyou/ext/Research/neuron_data/linesetLiWarpTransformRelease_updated0816.ndb"
+#define ADDRESS_NDB "/Users/toosyou/ext/Research/neuron_data/Removed20_lineset140508.ndb"
 #define ADDRESS_TIPS_BRANCHES "tips_branches"
 
 using namespace std;
