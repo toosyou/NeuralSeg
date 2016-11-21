@@ -13,8 +13,9 @@ from tflearn.layers.estimator import regression
 sys.path.append('./FlyLIB/')
 import neuron
 
-DIRECTORY_AMS = "/Volumes/toosyou_ext/neuron_data/resampled_111_slow/"
-SIZE_BATCH = 5
+DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
+SIZE_BATCH = 20
+SIZE_VALIDATION = 20
 
 def build_cnn_model():
     network = input_data(shape=[None, 16, 16, 16, 1])
@@ -35,9 +36,10 @@ def get_am_filename(neuron_name):
     rtn = neuron_name[0:index_underline+1] + 'resampled_1_1_1_ascii.am'
     return rtn;
 
-def get_data( in_mtp, index_start, size):
+def get_data( in_mtp, index_start, size, balance=False):
     X = list()
     Y = list()
+    number_tip_block = 0
     for i, points in enumerate(in_mtp[index_start: index_start+size]):
         am_name = get_am_filename(points.name)
         # read neural raw data
@@ -58,7 +60,7 @@ def get_data( in_mtp, index_start, size):
                     raw_block = raw.block([x, y, z])
                     if not raw_block.is_empty():
                         raw_block = raw_block.normalize() # normalize to (-1, 1)
-                        X.append( raw_block )
+                        X.append( raw_block.intensity.reshape( (16, 16, 16, 1) ) )
                         # check if any tips is in the center of raw block
                         find_tips = False
                         for coor in points.coordinates:
@@ -67,9 +69,14 @@ def get_data( in_mtp, index_start, size):
                                 break
                         if find_tips:
                             Y.append(1)
+                            number_tip_block += 1
                         else:
                             Y.append(0)
         print("X size: ", len(X))
+        print("number of tip block: ", number_tip_block)
+
+    X = np.array(X)
+    Y = np.array(tflearn.data_utils.to_categorical(Y, 2) )
     return X, Y
 
 if __name__ == '__main__':
@@ -85,14 +92,17 @@ if __name__ == '__main__':
 
     # make validation data with first 100 neurals from test
     print("Reading validation :")
-    validation_X, validation_Y = get_data(test_mtp, 0, SIZE_BATCH)
+    validation_X, validation_Y = get_data(test_mtp, 0, SIZE_VALIDATION)
+
+    print("Accuracy begin: ", model.evaluate(validation_X, validation_Y))
 
     # make training batch and train
     train_size = train_mtp.size()
     for i in range( int(train_size/SIZE_BATCH) ):
         print("Reading training batch ", i, " :")
         training_batch_X, training_batch_Y = get_data(train_mtp, i*SIZE_BATCH, SIZE_BATCH)
-        model.fit(training_batch_X, training_batch_Y, n_epoch=20,
+        model.fit(training_batch_X, training_batch_Y, n_epoch=10,
                     validation_set=(validation_X, validation_Y),
                     show_metric=True)
-        model.save('model.w')
+        model.save('model.tfl')
+        print("Accuracy: ", model.evaluate(validation_X, validation_Y))
