@@ -68,5 +68,8 @@ class MTP:
         in_mtp.close()
         return True
 
+    def size(self):
+        return len(self._tips)
+
     def __getitem__(self, index):
         return self._tips[index]

@@ -13,9 +13,8 @@ from tflearn.layers.estimator import regression
 sys.path.append('./FlyLIB/')
 import neuron
 
-SIZE_TIPS = 27898
-# SIZE_TIPS = 20
 DIRECTORY_AMS = "/Volumes/toosyou_ext/neuron_data/resampled_111_slow/"
+SIZE_BATCH = 5
 
 def build_cnn_model():
     network = input_data(shape=[None, 16, 16, 16, 1])
@@ -31,48 +30,69 @@ def build_cnn_model():
     network = regression(network, optimizer='adam', loss='binary_crossentropy')
     return network
 
+def get_am_filename(neuron_name):
+    index_underline = neuron_name.rindex('_')
+    rtn = neuron_name[0:index_underline+1] + 'resampled_1_1_1_ascii.am'
+    return rtn;
+
+def get_data( in_mtp, index_start, size):
+    X = list()
+    Y = list()
+    for i, points in enumerate(in_mtp[index_start: index_start+size]):
+        am_name = get_am_filename(points.name)
+        # read neural raw data
+        original_directory = os.getcwd()
+        os.chdir(DIRECTORY_AMS)
+        raw = neuron.NeuronRaw(am_name)
+        os.chdir(original_directory)
+        if raw.valid == False: # cannot read from am_name
+            print("*****ERROR READING: ", am_name, " *****", file=sys.stderr)
+            continue
+
+        print("Blocklizing ", i, " of ", size, " ",am_name, " :")
+        # blocklize with step = (8, 8, 8)
+        pbar_block = pb.ProgressBar()
+        for x in pbar_block(range(-8, raw.size[0]+8, 8)):
+            for y in range(-8, raw.size[1]+8, 8):
+                for z in range(-8, raw.size[2]+8, 8):
+                    raw_block = raw.block([x, y, z])
+                    if not raw_block.is_empty():
+                        raw_block = raw_block.normalize() # normalize to (-1, 1)
+                        X.append( raw_block )
+                        # check if any tips is in the center of raw block
+                        find_tips = False
+                        for coor in points.coordinates:
+                            if raw_block.is_in_the_center(coor):
+                                find_tips = True
+                                break
+                        if find_tips:
+                            Y.append(1)
+                        else:
+                            Y.append(0)
+        print("X size: ", len(X))
+    return X, Y
 
 if __name__ == '__main__':
 
-    print("building cnn model!")
+    # build convolutional neural network with tflearn
     network = build_cnn_model()
-    print("\t\t\tdone!")
+    model = tflearn.DNN(network)
+    print("Done building cnn model!")
 
-    #build convolutional neural network with tflearn
-
-    '''
+    # prepare data
     train_mtp = mtp.MTP('train.mtp')
-    print(train_mtp[0].name)
-    for coordinates in train_mtp[0].coordinates:
-        print(coordinates)
-    '''
-    # neurons = list()
+    test_mtp = mtp.MTP('test.mtp')
 
+    # make validation data with first 100 neurals from test
+    print("Reading validation :")
+    validation_X, validation_Y = get_data(test_mtp, 0, SIZE_BATCH)
 
-    # read am files
-    '''
-    original_directory = os.getcwd()
-    os.chdir(DIRECTORY_AMS)
-    pbar = pb.ProgressBar()
-    for t in pbar(tips[0:1]):
-        neuron_name = t.neuron_am_name[:-7] + 'resampled_1_1_1_ascii.am'
-        tmp_neuron = neuron.NeuronRaw( neuron_name )
-        if tmp_neuron.valid == True:
-            neurons.append( tmp_neuron )
-
-    os.chdir(original_directory)
-
-    # test neuron.block()
-    try:
-        os.chdir('block_test')
-    except:
-        os.mkdir('block_test', 0755)
-        os.chdir('block_test')
-    for x in range(0, neurons[0].size[0], 16):
-        for y in range(0, neurons[0].size[1], 16):
-            for z in range(0, neurons[0].size[1], 16):
-                block = neurons[0].block(start_point=(x, y, z))
-                if block.is_empty() == False:
-                    block.write_am(str(x)+'_'+str(y)+'_'+str(z)+'.am')
-    os.chdir(original_directory)
-    '''
+    # make training batch and train
+    train_size = train_mtp.size()
+    for i in range( int(train_size/SIZE_BATCH) ):
+        print("Reading training batch ", i, " :")
+        training_batch_X, training_batch_Y = get_data(train_mtp, i*SIZE_BATCH, SIZE_BATCH)
+        model.fit(training_batch_X, training_batch_Y, n_epoch=20,
+                    validation_set=(validation_X, validation_Y),
+                    show_metric=True)
+        model.save('model.w')
