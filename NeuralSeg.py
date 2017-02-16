@@ -18,22 +18,28 @@ DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
 SIZE_BATCH = 20
 SIZE_VALIDATION = 20
 
+size_input_data = [200, 200, 200]
+
 index_block_postive_sofar = 0
 index_block_negtive_sofar = 0
 
 def build_cnn_model():
-    network = input_data(shape=[None, 16, 16, 16, 1])
-    network = conv_3d(network, 32, 3, activation='relu', regularizer='L2')
-    network = max_pool_3d(network, 2) # 8 x 8 x 8 x 32
-    network = conv_3d(network, 64, 3, activation='relu', regularizer='L2')
-    network = max_pool_3d(network, 2) # 4 x 4 x 4 x 64
-    network = fully_connected(network, 128, activation='tanh')
-    network = dropout(network, 0.8)
-    network = fully_connected(network, 256, activation='tanh')
-    network = dropout(network, 0.8)
-    network = fully_connected(network, 2, activation='softmax')
-    network = regression(network, optimizer='adam', loss='binary_crossentropy')
-    return network
+    network = input_data(shape=[None].extend(size_input_data)) # 200 200 200
+    network = conv_3d(network, 32, 3, activation='relu')
+    network = max_pool_3d(network, 2) # 32 100 100 100
+    network = conv_3d(network, 64, 3, activation='relu')
+    network = conv_3d(network, 64, 3, activation='relu')
+    network = max_pool_3d(network, 2) # 64 50 50 50
+    network = conv_3d(network, 128, 3, activation='relu')
+    network = conv_3d(network, 128, 3, activation='relu')
+    network = max_pool_3d(network, 2) # 128 25 25 25
+    network = conv_3d(network, 128, 1, activation='relu')
+    network = fully_connected(network, 2048)
+    network = fully_connected(network, np.prod(size_input_data))
+    network = regression(network, optimizer='adam',
+                            loss='binary_crossentropy')
+    model = tflearn.DNN(network)
+    return model, network
 
 def get_am_filename(neuron_name):
     index_underline = neuron_name.rindex('_')
@@ -114,8 +120,7 @@ def neuron_resize_test():
 
 def main_train():
     # build convolutional neural network with tflearn
-    network = build_cnn_model()
-    model = tflearn.DNN(network)
+    model, network = build_cnn_model()
     print("Done building cnn model!")
 
     # prepare data
