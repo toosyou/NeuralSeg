@@ -18,6 +18,9 @@ DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
 SIZE_BATCH = 20
 SIZE_VALIDATION = 20
 
+index_block_postive_sofar = 0
+index_block_negtive_sofar = 0
+
 def build_cnn_model():
     network = input_data(shape=[None, 16, 16, 16, 1])
     network = conv_3d(network, 32, 3, activation='relu', regularizer='L2')
@@ -38,6 +41,8 @@ def get_am_filename(neuron_name):
     return rtn;
 
 def get_data( in_mtp, index_start, size, balance=False):
+    global index_block_postive_sofar
+    global index_block_negtive_sofar
     X = list()
     Y = list()
     number_tip_block = 0
@@ -63,6 +68,8 @@ def get_data( in_mtp, index_start, size, balance=False):
                 # check if any tips is in the center of raw block
                 if raw_block.points_in_the_center(points.coordinates):
                     Y.append(1)
+                    raw_block.normalize(rg=[0, 1]).write_am('/home/toosyou/projects/NeuralSeg/test_am/positive/' + str(index_block_postive_sofar) + '.am')
+                    index_block_postive_sofar += 1
                     # make more positive data using mirroring
                     for x, y, z in product( (0, 1), repeat=3 ):
                         if (x, y, z) != (0, 0, 0):
@@ -70,6 +77,8 @@ def get_data( in_mtp, index_start, size, balance=False):
                             Y.append(1)
                     number_tip_block += 8
                 else:
+                    raw_block.normalize(rg=[0, 1]).write_am('/home/toosyou/projects/NeuralSeg/test_am/negtive/' + str(index_block_negtive_sofar) + '.am')
+                    index_block_negtive_sofar += 1
                     Y.append(0)
         print("X size: ", len(X))
         print("# of non-tip block: ", len(X) - number_tip_block)
@@ -81,8 +90,29 @@ def get_data( in_mtp, index_start, size, balance=False):
     os.chdir(original_directory)
     return X, Y
 
-if __name__ == '__main__':
+def neuron_resize_test():
+    train_mtp = mtp.MTP('train.mtp')
+    for i in range(10):
+        neuron_name = DIRECTORY_AMS + get_am_filename(train_mtp[i].name)
+        print(neuron_name)
+        try:
+            test_neuron = neuron.NeuronRaw(neuron_name)
+        except:
+            continue
+        if test_neuron.valid == False:
+            continue
+        # orig
+        print(test_neuron.size)
+        print(test_neuron.intensity.shape)
+        test_neuron.write_am(str(i)+'_original.am')
+        # resized
+        test_neuron = test_neuron.resize([200, 200, 200])
+        print(test_neuron.size)
+        print(test_neuron.intensity.shape)
+        test_neuron.write_am(str(i)+'_resized.am')
+    return
 
+def main_train():
     # build convolutional neural network with tflearn
     network = build_cnn_model()
     model = tflearn.DNN(network)
@@ -108,3 +138,8 @@ if __name__ == '__main__':
                     show_metric=True)
         model.save('model.tfl')
         print("Accuracy: ", model.evaluate(validation_X, validation_Y))
+
+    return
+
+if __name__ == '__main__':
+    neuron_resize_test()
