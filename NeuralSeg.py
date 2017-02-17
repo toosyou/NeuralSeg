@@ -6,6 +6,7 @@ import random
 from itertools import product
 import mtp
 import tflearn
+import copy
 from tflearn.layers.core import input_data, dropout, fully_connected
 from tflearn.layers.conv import conv_3d, max_pool_3d
 from tflearn.layers.normalization import l2_normalize
@@ -99,7 +100,8 @@ def get_data( in_mtp, index_start, size, balance=False):
 def neuron_resize_test():
     train_mtp = mtp.MTP('train.mtp')
     for i in range(10):
-        neuron_name = DIRECTORY_AMS + get_am_filename(train_mtp[i].name)
+        original_neuron_name = train_mtp[i].name
+        neuron_name = DIRECTORY_AMS + get_am_filename(original_neuron_name)
         print(neuron_name)
         try:
             test_neuron = neuron.NeuronRaw(neuron_name)
@@ -107,15 +109,25 @@ def neuron_resize_test():
             continue
         if test_neuron.valid == False:
             continue
+
+        # copy for tips point
+        test_tips_vol = copy.deepcopy(test_neuron)
+        test_tips_vol.clear_intensity()
+        test_tips_vol.read_from_points(train_mtp[i].coordinates, exaggerate=True)
+
         # orig
         print(test_neuron.size)
         print(test_neuron.intensity.shape)
-        test_neuron.write_am(str(i)+'_original.am')
+        test_neuron.write_am(original_neuron_name+'.am')
+        test_tips_vol.write_am(original_neuron_name+'_target.am')
+
         # resized
         test_neuron = test_neuron.resize([200, 200, 200])
+        test_tips_vol = test_tips_vol.resize([200, 200, 200])
         print(test_neuron.size)
         print(test_neuron.intensity.shape)
-        test_neuron.write_am(str(i)+'_resized.am')
+        test_neuron.write_am(original_neuron_name+'_resized.am')
+        test_tips_vol.write_am(original_neuron_name+'_target_resized.am')
     return
 
 def main_train():
