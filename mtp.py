@@ -85,7 +85,7 @@ class MTP:
     def size(self):
         return len(self._tips)
 
-    def get_sliced_data(self, index_start, size, size_input, size_output):
+    def get_sliced_data(self, index_start, size, size_input, size_output, early_break=False):
         X = list()
         Y = list()
 
@@ -121,12 +121,17 @@ class MTP:
             for z in range(raw.size[2]):
                 slices = raw.block(start_point=(0, 0, z-10), size=size_input)
 
+                # pass empty target
+                if not np.count_nonzero(target.intensity[:,:,z]): # target's empty, continue
+                    continue
+
                 X.append(slices.copy().intensity)
                 Y.append(copy.deepcopy(target.intensity[:,:,z]).flatten())
                 # update progressbar
                 number_succeed_read += 1
-                progressbar.update(number_succeed_read)
-                if number_succeed_read >= size:
+                if number_succeed_read < size:
+                    progressbar.update(number_succeed_read)
+                elif early_break:
                     break
 
         # shuffle X, Y and make X and Y np-arrays

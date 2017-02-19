@@ -1,5 +1,6 @@
 import sys
 import os
+from os import mkdir, makedirs
 import progressbar as pb
 import numpy as np
 import random
@@ -8,6 +9,7 @@ import mtp
 from mtp import get_am_filename
 import tflearn
 import copy
+from scipy.misc import imsave
 from tflearn.layers.core import input_data, dropout, fully_connected
 from tflearn.layers.conv import conv_3d, max_pool_3d
 from tflearn.layers.conv import conv_2d, max_pool_2d
@@ -15,13 +17,17 @@ from tflearn.layers.normalization import l2_normalize
 from tflearn.layers.estimator import regression
 from tflearn.data_preprocessing import ImagePreprocessing
 from tflearn.data_augmentation import ImageAugmentation
+import multiprocessing
+from multiprocessing import Process, Queue
 
 sys.path.append('./FlyLIB/')
 import neuron
 
 DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
-SIZE_BATCH = 20
-SIZE_VALIDATION = 50
+DIRECTORY_MODELS = 'models/'
+DIRECTORY_VALIDS = 'valids/'
+SIZE_BATCH = 100
+SIZE_VALIDATION = 10
 
 SIZE_INPUT_DATA = [200, 200, 21]
 SIZE_INPUT_RESIZE = SIZE_INPUT_DATA + [200]
@@ -88,6 +94,11 @@ def neuron_resize_test():
         test_tips_vol.write_am(original_neuron_name+'_target_resized.am')
     return
 
+def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue):
+    result = input_mtp.get_sliced_data(index_start, size, size_input, size_output)
+    return_queue.put( result )
+    return
+
 def main_train():
     # build convolutional neural network with tflearn
     model, network = build_cnn_model()
@@ -99,24 +110,43 @@ def main_train():
 
     # make validation data with first 100 neurals from test
     print("Reading validation :")
-    #validation_X, validation_Y = get_data(test_mtp, 0, SIZE_VALIDATION)
-    validation_X, validation_Y, validation_index = test_mtp.get_sliced_data(0, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA)
-
-    print("Accuracy begin: ", model.evaluate(validation_X, validation_Y))
-
-    return
+    validation_X, validation_Y, validation_index = test_mtp.get_sliced_data(0, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, early_break=True)
 
     # make training batch and train
-    train_size = train_mtp.size()
-    for i in range( int(train_size/SIZE_BATCH) ):
-        print("Reading training batch ", i, " :")
-        training_batch_X, training_batch_Y = get_data(train_mtp, i*SIZE_BATCH, SIZE_BATCH)
-        model.fit(training_batch_X, training_batch_Y, n_epoch=10,
-                    validation_set=(validation_X, validation_Y),
+    makedirs(DIRECTORY_MODELS, exist_ok=True)
+    makedirs(DIRECTORY_VALIDS, exist_ok=True)
+    index_fit = 0
+    index_train = 0
+    # create a process to read first batch
+    return_queue = Queue()
+    read_process = Process(target=mtp_get_sliced_data,
+                             args=(train_mtp, index_train, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, return_queue))
+    read_process.start()
+    while True:
+        print('index_train:', index_train)
+        # get previous reading result
+        training_batch_X, training_batch_Y, index_train = return_queue.get()
+        read_process.join()
+        # begin reading process
+        read_process = Process(target=mtp_get_sliced_data,
+                                 args=(train_mtp, index_train, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, return_queue))
+        read_process.start()
+        # do cnn thing
+        model.fit(training_batch_X, training_batch_Y, n_epoch=20,
                     show_metric=True)
-        model.save('model.tfl')
-        print("Accuracy: ", model.evaluate(validation_X, validation_Y))
+        model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
+        # save valid
+        model_outputs = model.predict(validation_X)
+        for i, output in enumerate(model_outputs):
+            imsave(DIRECTORY_VALIDS+str(index_fit)+'_'+str(i)+'_input.png', validation_X[i][:,:,10])
+            imsave(DIRECTORY_VALIDS+str(index_fit)+'_'+str(i)+'_target.png', validation_Y[i].reshape(SIZE_OUTPUT_DATA))
+            imsave(DIRECTORY_VALIDS+str(index_fit)+'_'+str(i)+'_output.png', np.array(output).reshape(SIZE_OUTPUT_DATA))
+        # increase index fit
+        index_fit += 1
 
+    # final join
+    return_queue.get()
+    read_process.join()
     return
 
 if __name__ == '__main__':
