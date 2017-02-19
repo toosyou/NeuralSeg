@@ -1,6 +1,20 @@
 import numpy as np
 import progressbar as pb
+import os
+import copy
+import progressbar as pb
+from sklearn.utils import shuffle
 
+import sys
+sys.path.append('./FlyLIB/')
+import neuron
+
+DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
+
+def get_am_filename(neuron_name):
+    index_underline = neuron_name.rindex('_')
+    rtn = neuron_name[0:index_underline+1] + 'resampled_1_1_1_ascii.am'
+    return rtn;
 
 class Points:
 
@@ -70,6 +84,106 @@ class MTP:
 
     def size(self):
         return len(self._tips)
+
+    def get_sliced_data(self, index_start, size, size_input, size_output):
+        X = list()
+        Y = list()
+
+        # change directory to ams
+        original_directory = os.getcwd()
+        os.chdir(DIRECTORY_AMS)
+
+        # read size sliced data
+        progressbar = pb.ProgressBar(max_value=size)
+        number_succeed_read = 0
+        index_so_far = index_start
+        while number_succeed_read < size:
+            points = self._tips[index_so_far]
+            am_name = get_am_filename(points.name)
+            # increase index
+            index_so_far = (index_so_far+1) % self.size()
+            # read neural raw data
+            raw = neuron.NeuronRaw(am_name)
+            if raw.valid == False: # cannot read from am_name
+                # print("*****ERROR READING: ", am_name, " *****", file=sys.stderr)
+                continue
+
+            # get target for Y
+            target = raw.copy()
+            target.clear_intensity()
+            target.read_from_points(points.coordinates)
+
+            # resize raw and target data xy to fit size_input
+            raw.resize([size_input[0], size_input[1], -1])
+            target.resize([size_output[0], size_output[1], -1])
+
+            # slice raw by z-axis
+            for z in range(raw.size[2]):
+                slices = raw.block(start_point=(0, 0, z-10), size=size_input)
+
+                X.append(slices.copy().intensity)
+                Y.append(copy.deepcopy(target.intensity[:,:,z]).flatten())
+                # update progressbar
+                number_succeed_read += 1
+                progressbar.update(number_succeed_read)
+                if number_succeed_read >= size:
+                    break
+
+        # shuffle X, Y and make X and Y np-arrays
+        X, Y = shuffle(X, Y)
+        X = np.array(X)
+        Y = np.array(Y)
+
+        # change directory back to original one
+        os.chdir(original_directory)
+
+        return X, Y, index_so_far
+
+    def get_raw_data(self, index_start, size, size_input, size_output):
+        X = list()
+        Y = list()
+
+        # change directory to ams
+        original_directory = os.getcwd()
+        os.chdir(DIRECTORY_AMS)
+
+        # get 'size' neurons
+        print('Geting data:')
+        progressbar = pb.ProgressBar(max_value=size)
+        number_succeed_read = 0
+        passed_offset = 0
+        while number_succeed_read < size:
+            # calculate index
+            this_index = ( index_start + number_succeed_read + passed_offset) % self.size()
+            points = self._tips[this_index]
+            am_name = get_am_filename(points.name)
+            # read neural raw data
+            raw = neuron.NeuronRaw(am_name)
+            if raw.valid == False: # cannot read from am_name
+                print("*****ERROR READING: ", am_name, " *****", file=sys.stderr)
+                passed_offset += 1
+                continue
+            else:
+                number_succeed_read += 1
+                progressbar.update(number_succeed_read)
+
+            # get input data X, resize to size_input and normalize
+            this_x = copy.deepcopy(raw.resize(size_input, copy=True).intensity.reshape(size_input.append(1))) # 200 200 200 1
+            X.append(this_x)
+            # get output data Y, resize to size_output and flatten it
+            raw.clear_intensity()
+            raw.read_from_points(points.coordinates)
+            raw.resize(size_output)
+            this_y = copy.deepcopy( raw.intensity.flatten() )
+            Y.append(this_y)
+
+        # make X and Y np-array
+        X = np.array(X)
+        Y = np.array(Y)
+
+        # change directory back to original one
+        os.chdir(original_directory)
+        return X, Y, (index_start + size + passed_offset) % self.size()
 
     def __getitem__(self, index):
         return self._tips[index]
