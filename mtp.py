@@ -9,7 +9,7 @@ import sys
 sys.path.append('./FlyLIB/')
 import neuron
 
-DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
+DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/" # must contains the ending slash
 
 def get_am_filename(neuron_name):
     index_underline = neuron_name.rindex('_')
@@ -37,16 +37,30 @@ class Points:
             line = in_mtp.readline()
             self.coordinates[i] = list(map(float, line.split()))
 
+    def am_name(self):
+        return get_am_filename(self.name)
+
+    def am_exists(self):
+        try:
+            in_am = open(DIRECTORY_AMS+self.am_name(), 'r')
+        except IOError: # cannot be opened
+            return False
+        in_am.close()
+        return True
+
     def __getitem__(self, index):
         return self.coordinates[index]
 
 class MTP:
 
-    def __init__(self, address_mtp):
+    def __init__(self, address_mtp, clean_up=True):
         self._tips = list()
 
         if address_mtp:
             self.read(address_mtp)
+            if clean_up:
+                print('Clean up:')
+                self.clean_not_exist()
 
     def write(self, address_mtp):
         out_mtp = open(address_mtp, 'w')
@@ -85,7 +99,22 @@ class MTP:
     def size(self):
         return len(self._tips)
 
-    def get_sliced_data(self, index_start, size, size_input, size_output, early_break=False):
+    def clean_not_exist(self):
+        number_removed = 0
+        progressbar = pb.ProgressBar(self.size())
+        for i, points in enumerate(list(self._tips)):
+            if points.am_exists() == False:
+                self._tips.pop( i - number_removed )
+                number_removed += 1
+            progressbar.update(i)
+        return
+
+    def read_neuron(self, index):
+        points = self._tips[index]
+        am_name = get_am_filename(points.name)
+        return neuron.NeuronRaw(am_name)
+
+    def get_sliced_data(self, index_start, size, size_input, size_output):
         X = list()
         Y = list()
 
@@ -98,15 +127,17 @@ class MTP:
         number_succeed_read = 0
         index_so_far = index_start
         while number_succeed_read < size:
-            points = self._tips[index_so_far]
-            am_name = get_am_filename(points.name)
+            # read neural raw data
+            raw = self.read_neuron(index_so_far)
             # increase index
             index_so_far = (index_so_far+1) % self.size()
-            # read neural raw data
-            raw = neuron.NeuronRaw(am_name)
             if raw.valid == False: # cannot read from am_name
                 # print("*****ERROR READING: ", am_name, " *****", file=sys.stderr)
                 continue
+            else:
+                number_succeed_read += 1
+                # update progressbar
+                progressbar.update(number_succeed_read)
 
             # get target for Y
             target = raw.copy()
@@ -127,12 +158,7 @@ class MTP:
 
                 X.append(slices.copy().intensity)
                 Y.append(copy.deepcopy(target.intensity[:,:,z]).flatten())
-                # update progressbar
-                number_succeed_read += 1
-                if number_succeed_read < size:
-                    progressbar.update(number_succeed_read)
-                elif early_break:
-                    break
+
 
         # shuffle X, Y and make X and Y np-arrays
         X, Y = shuffle(X, Y)
