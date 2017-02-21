@@ -26,6 +26,7 @@ import neuron
 DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
 DIRECTORY_MODELS = '/home/toosyou/ext/models/'
 DIRECTORY_VALIDS = '/home/toosyou/ext/valids/'
+DIRECTORY_TRAIN_OUTPUT = '/home/toosyou/ext/train_output/'
 NUMBER_WORKERS = 5
 
 SIZE_BATCH = 10
@@ -42,8 +43,8 @@ def build_cnn_model():
     network_input_size = [None] + SIZE_INPUT_DATA # None 200 200 21
 
     img_prep = ImagePreprocessing()
-    img_prep.add_samplewise_zero_center()
-    img_prep.add_samplewise_stdnorm()
+    img_prep.add_featurewise_zero_center()
+    img_prep.add_featurewise_stdnorm()
 
     # build CNN
     network = input_data(shape=network_input_size,
@@ -60,7 +61,7 @@ def build_cnn_model():
     network = fully_connected(network, 2048)
     network = fully_connected(network, np.prod(SIZE_OUTPUT_DATA)) # 10000
     network = regression(network, optimizer='adam',
-                            loss='binary_crossentropy')
+                            loss='mean_square')
     model = tflearn.DNN(network)
     return model, network
 
@@ -103,18 +104,33 @@ def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, r
     return_queue.put( result )
     return
 
-def save_valids(model, index, validation_X, validation_Y):
-    model_outputs = model.predict(validation_X)
+def save_valids(model, index, X, Y, size=-1, is_training_set=False):
+    # predict 'size' X or all X
+    if size != -1:
+        model_outputs = model.predict(X)
+    else:
+        model_outputs = model.predict(X[0:size])
+    # set currect directory to save outputs/valids
+    if is_training_set:
+        directory = DIRECTORY_TRAIN_OUTPUT
+    else:
+        directory = DIRECTORY_VALIDS
+    # output to image files
     for i, output in enumerate(model_outputs):
-        imsave(DIRECTORY_VALIDS+str(index)+'_'+str(i)+'_input.png', validation_X[i][:,:,10])
-        imsave(DIRECTORY_VALIDS+str(index)+'_'+str(i)+'_target.png', validation_Y[i].reshape(SIZE_OUTPUT_DATA))
-        imsave(DIRECTORY_VALIDS+str(index)+'_'+str(i)+'_output.png', np.array(output).reshape(SIZE_OUTPUT_DATA))
+        imsave(directory+str(index)+'_'+str(i)+'_input.png', X[i][:,:,10])
+        imsave(directory+str(index)+'_'+str(i)+'_target.png', Y[i].reshape(SIZE_OUTPUT_DATA))
+        imsave(directory+str(index)+'_'+str(i)+'_output.png', np.array(output).reshape(SIZE_OUTPUT_DATA))
     return
 
-def main_train():
+def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, init_index_train=0):
     # build convolutional neural network with tflearn
     model, network = build_cnn_model()
     print("Done building cnn model!")
+
+    # continue training with init weights loaded
+    if to_continue:
+        model.load(DIRECTORY_MODELS+name_model)
+        print('Done load model weight to continue training')
 
     # prepare data
     train_mtp = mtp.MTP('train.mtp')
@@ -130,8 +146,14 @@ def main_train():
     # make training batch and train
     makedirs(DIRECTORY_MODELS, exist_ok=True)
     makedirs(DIRECTORY_VALIDS, exist_ok=True)
-    index_fit = 0
-    index_train = 0
+    makedirs(DIRECTORY_TRAIN_OUTPUT, exist_ok=True)
+    if to_continue: # continue training with initial index
+        index_fit = init_index_fit
+        index_train = init_index_train
+    else:
+        index_fit = 0
+        index_train = 0
+    get_valid = False # check if valid data is gotten
     # create NUMBER_WORKERS processes to read first batch
     train_queue = Queue()
     train_reading_workers = list()
@@ -154,23 +176,28 @@ def main_train():
         index_train += SIZE_BATCH
         train_reading_workers[index_worker] = read_process
         read_process.start()
+
+        # wait for valid to finish reading
+        if get_valid == False:
+            get_valid = True
+            validation_X, validation_Y, _, _ = valid_queue.get()
+            if valid_worker.is_alive == True:
+                valid_worker.join()
         # do cnn thing
-        model.fit(training_batch_X, training_batch_Y, n_epoch=500,
+        model.fit(training_batch_X, training_batch_Y, n_epoch=300,
+                    validation_set=(validation_X, validation_Y),
                     show_metric=True)
         if index_fit % 5 == 0:
             model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
-        # wait for valid to finish reading
-        validation_X, validation_Y, _, _ = valid_queue.get()
-        if valid_worker.is_alive == True:
-            valid_worker.join()
+
         # save valid
         save_valids(model, index_fit, validation_X, validation_Y)
+        # save 10 training predict
+        save_valids(model, index_fit, training_batch_X, training_batch_Y, size=10, is_training_set=True)
         # increase index fit
         index_fit += 1
 
-    # final join
-    train_queue.get()
-    read_process.join()
+    # final join, WIP
     return
 
 if __name__ == '__main__':
