@@ -28,7 +28,7 @@ DIRECTORY_MODELS = '/home/toosyou/ext/models/'
 DIRECTORY_VALIDS = '/home/toosyou/ext/valids/'
 NUMBER_WORKERS = 5
 
-SIZE_BATCH = 1
+SIZE_BATCH = 10
 SIZE_VALIDATION = 1
 
 SIZE_INPUT_DATA = [200, 200, 21]
@@ -99,7 +99,7 @@ def neuron_resize_test():
 
 def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue, index_worker = 0):
     result = list(input_mtp.get_sliced_data(index_start, size, size_input, size_output) )
-    result.expend(index_worker)
+    result.append(index_worker)
     return_queue.put( result )
     return
 
@@ -146,6 +146,7 @@ def main_train():
         print('index_fit:', index_fit)
         # get previous reading result
         training_batch_X, training_batch_Y, _, index_worker = train_queue.get()
+        print('Get worker:', index_worker, 'Size:', len(training_batch_Y) )
         train_reading_workers[index_worker].join()
         # begin reading process
         read_process = Process(target=mtp_get_sliced_data,
@@ -154,14 +155,13 @@ def main_train():
         train_reading_workers[index_worker] = read_process
         read_process.start()
         # do cnn thing
-        model.fit(training_batch_X, training_batch_Y, n_epoch=50,
+        model.fit(training_batch_X, training_batch_Y, n_epoch=500,
                     show_metric=True)
         if index_fit % 5 == 0:
             model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
         # wait for valid to finish reading
+        validation_X, validation_Y, _, _ = valid_queue.get()
         if valid_worker.is_alive == True:
-            print('Wait for valid to finish reading!')
-            validation_X, validation_Y, _, _ = valid_queue.get()
             valid_worker.join()
         # save valid
         save_valids(model, index_fit, validation_X, validation_Y)

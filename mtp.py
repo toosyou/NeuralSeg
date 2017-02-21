@@ -101,7 +101,7 @@ class MTP:
 
     def clean_not_exist(self):
         number_removed = 0
-        progressbar = pb.ProgressBar(self.size())
+        progressbar = pb.ProgressBar(max_value=self.size())
         for i, points in enumerate(list(self._tips)):
             if points.am_exists() == False:
                 self._tips.pop( i - number_removed )
@@ -113,6 +113,12 @@ class MTP:
         points = self._tips[index]
         am_name = get_am_filename(points.name)
         return neuron.NeuronRaw(am_name)
+
+    def get_target(self, neuron, index):
+        target = neuron.copy()
+        target.clean_intensity()
+        target.read_from_points(self._tips[index].coordinates)
+        return target
 
     def get_sliced_data(self, index_start, size, size_input, size_output):
         X = list()
@@ -129,20 +135,14 @@ class MTP:
         while number_succeed_read < size:
             # read neural raw data
             raw = self.read_neuron(index_so_far)
-            # increase index
-            index_so_far = (index_so_far+1) % self.size()
             if raw.valid == False: # cannot read from am_name
                 # print("*****ERROR READING: ", am_name, " *****", file=sys.stderr)
                 continue
             else:
                 number_succeed_read += 1
-                # update progressbar
-                progressbar.update(number_succeed_read)
 
             # get target for Y
-            target = raw.copy()
-            target.clear_intensity()
-            target.read_from_points(points.coordinates)
+            target = self.get_target(raw, index_so_far)
 
             # resize raw and target data xy to fit size_input
             raw.resize([size_input[0], size_input[1], -1])
@@ -158,6 +158,11 @@ class MTP:
 
                 X.append(slices.copy().intensity)
                 Y.append(copy.deepcopy(target.intensity[:,:,z]).flatten())
+
+            # increase index
+            index_so_far = (index_so_far+1) % self.size()
+            # update progressbar
+            progressbar.update(number_succeed_read)
 
 
         # shuffle X, Y and make X and Y np-arrays
@@ -202,7 +207,7 @@ class MTP:
             this_x = copy.deepcopy(raw.resize(size_input, copy=True).intensity.reshape(size_input.append(1))) # 200 200 200 1
             X.append(this_x)
             # get output data Y, resize to size_output and flatten it
-            raw.clear_intensity()
+            raw.clean_intensity()
             raw.read_from_points(points.coordinates)
             raw.resize(size_output)
             this_y = copy.deepcopy( raw.intensity.flatten() )
