@@ -17,8 +17,8 @@ from tflearn.layers.normalization import l2_normalize
 from tflearn.layers.estimator import regression
 from tflearn.data_preprocessing import ImagePreprocessing
 from tflearn.data_augmentation import ImageAugmentation
-import multiprocessing
-from multiprocessing import Process, Queue
+import multiprocessing as mp
+from multiprocessing import Process, Queue, Lock, Value, Array, Manager
 
 sys.path.append('./FlyLIB/')
 import neuron
@@ -27,10 +27,10 @@ DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
 DIRECTORY_MODELS = '/home/toosyou/ext/models/'
 DIRECTORY_VALIDS = '/home/toosyou/ext/valids/'
 DIRECTORY_TRAIN_OUTPUT = '/home/toosyou/ext/train_output/'
-NUMBER_WORKERS = 5
+NUMBER_WORKERS = 4
 
-SIZE_BATCH = 10
-SIZE_VALIDATION = 1
+SIZE_BATCH = 12
+SIZE_VALIDATION = 12
 
 SIZE_INPUT_DATA = [200, 200, 21]
 SIZE_INPUT_RESIZE = SIZE_INPUT_DATA + [200]
@@ -98,18 +98,18 @@ def neuron_resize_test():
         test_tips_vol.write_am(original_neuron_name+'_target_resized.am')
     return
 
-def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue, index_worker = 0):
+def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue, index_worker = -1):
     result = list(input_mtp.get_sliced_data(index_start, size, size_input, size_output) )
-    result.append(index_worker)
+    print('worder '+str(index_worker)+' done! index_start: '+str(index_start))
     return_queue.put( result )
     return
 
 def save_valids(model, index, X, Y, size=-1, is_training_set=False):
     # predict 'size' X or all X
     if size != -1:
-        model_outputs = model.predict(X)
-    else:
         model_outputs = model.predict(X[0:size])
+    else:
+        model_outputs = model.predict(X)
     # set currect directory to save outputs/valids
     if is_training_set:
         directory = DIRECTORY_TRAIN_OUTPUT
@@ -138,22 +138,25 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
 
     # make validation data with first 100 neurals from test
     print("Reading validation :")
-    valid_queue = Queue()
+    valid_manager = Manager()
+    valid_queue = valid_manager.Queue()
     valid_worker = Process(target=mtp_get_sliced_data,
                             args=(test_mtp, 0, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, valid_queue))
     valid_worker.start()
+    print('started')
+    # catch validations
+    validation_X, validation_Y, _, _ = valid_queue.get()
+    print(len(validation_Y))
+
+    return
 
     # make training batch and train
     makedirs(DIRECTORY_MODELS, exist_ok=True)
     makedirs(DIRECTORY_VALIDS, exist_ok=True)
     makedirs(DIRECTORY_TRAIN_OUTPUT, exist_ok=True)
-    if to_continue: # continue training with initial index
-        index_fit = init_index_fit
-        index_train = init_index_train
-    else:
-        index_fit = 0
-        index_train = 0
-    get_valid = False # check if valid data is gotten
+    index_fit = init_index_fit
+    index_train = init_index_train
+
     # create NUMBER_WORKERS processes to read first batch
     train_queue = Queue()
     train_reading_workers = list()
@@ -164,12 +167,12 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
         train_reading_workers.append(read_process)
         read_process.start()
 
+    # start training
     while True:
         print('index_fit:', index_fit)
         # get previous reading result
         training_batch_X, training_batch_Y, _, index_worker = train_queue.get()
         print('Get worker:', index_worker, 'Size:', len(training_batch_Y) )
-        train_reading_workers[index_worker].join()
         # begin reading process
         read_process = Process(target=mtp_get_sliced_data,
                                  args=(train_mtp, index_train, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, train_queue, index_worker))
@@ -177,14 +180,9 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
         train_reading_workers[index_worker] = read_process
         read_process.start()
 
-        # wait for valid to finish reading
-        if get_valid == False:
-            get_valid = True
-            validation_X, validation_Y, _, _ = valid_queue.get()
-            if valid_worker.is_alive == True:
-                valid_worker.join()
         # do cnn thing
-        model.fit(training_batch_X, training_batch_Y, n_epoch=300,
+        model.fit(training_batch_X, training_batch_Y, n_epoch=25,
+                    batch_size=int(len(training_batch_Y)/8),
                     validation_set=(validation_X, validation_Y),
                     show_metric=True)
         if index_fit % 5 == 0:

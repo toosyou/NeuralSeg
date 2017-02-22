@@ -1,13 +1,19 @@
+import scipy
 import numpy as np
 import progressbar as pb
 import os
 import copy
 import progressbar as pb
 from sklearn.utils import shuffle
+from random import random
+import tqdm
+from tqdm import tqdm, trange
 
 import sys
 sys.path.append('./FlyLIB/')
 import neuron
+
+EMPTY_SLICE_RATIO = 0.1 # 10% of slices data with empty output
 
 DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/" # must contains the ending slash
 
@@ -59,7 +65,6 @@ class MTP:
         if address_mtp:
             self.read(address_mtp)
             if clean_up:
-                print('Clean up:')
                 self.clean_not_exist()
 
     def write(self, address_mtp):
@@ -84,13 +89,10 @@ class MTP:
         except IOError:
             return False
 
-        print("Reading " + address_mtp + " :")
-
-        pbar = pb.ProgressBar()
         size_tips = int(in_mtp.readline())
 
         # reading tips
-        for i in pbar(range(size_tips)):
+        for i in trange(size_tips, desc='Reading '+address_mtp):
             self._tips.append(Points(in_mtp))
 
         in_mtp.close()
@@ -101,12 +103,12 @@ class MTP:
 
     def clean_not_exist(self):
         number_removed = 0
-        progressbar = pb.ProgressBar(max_value=self.size())
-        for i, points in enumerate(list(self._tips)):
-            if points.am_exists() == False:
-                self._tips.pop( i - number_removed )
-                number_removed += 1
-            progressbar.update(i)
+        with tqdm(total=self.size(), desc='Clean up') as progressbar:
+            for i, points in enumerate(list(self._tips)):
+                if points.am_exists() == False:
+                    self._tips.pop( i - number_removed )
+                    number_removed += 1
+                progressbar.update()
         return
 
     def read_neuron(self, index):
@@ -129,7 +131,7 @@ class MTP:
         os.chdir(DIRECTORY_AMS)
 
         # read size sliced data
-        progressbar = pb.ProgressBar(max_value=size)
+        progressbar = tqdm(total=size, desc='Slice '+str(index_start))
         number_succeed_read = 0
         index_so_far = index_start
         while number_succeed_read < size:
@@ -145,8 +147,8 @@ class MTP:
             target = self.get_target(raw, index_so_far)
 
             # resize raw and target data xy to fit size_input
-            raw.resize([size_input[0], size_input[1], -1])
-            target.resize([size_output[0], size_output[1], -1])
+            raw.resize([size_input[0], size_input[1], -1], order=1) # bilinear
+            target.resize([size_output[0], size_output[1], -1], order=0) # nestest
 
             # slice raw by z-axis
             for z in range(raw.size[2]):
@@ -154,15 +156,31 @@ class MTP:
 
                 # pass empty target
                 if not np.count_nonzero(target.intensity[:,:,z]): # target's empty, continue
+                    # 10% empty data
+                    if random() < EMPTY_SLICE_RATIO:
+                        X.append(slices.copy().intensity)
+                        Y.append(copy.deepcopy(target.intensity[:,:,z]).flatten())
                     continue
 
-                X.append(slices.copy().intensity)
-                Y.append(copy.deepcopy(target.intensity[:,:,z]).flatten())
+                # apply rotate and mirron to both x and y
+                copy_slices = slices.copy().intensity
+                copy_target = copy.deepcopy(target.intensity[:, :, z])
+                for rotate in range(4):
+                    for mirron in range(2):
+                        # rotate 'rotate' times
+                        this_x = np.rot90(copy_slices, k=rotate, axes=[0, 1])
+                        this_y = np.rot90(copy_target, k=rotate, axes=[0, 1])
+                        # mirron 'mirron' times
+                        if mirron != 0:
+                            this_x = this_x[:,::-1,:]
+                            this_y = this_y[:,::-1]
+                        X.append(this_x)
+                        Y.append(this_y.flatten())
 
             # increase index
             index_so_far = (index_so_far+1) % self.size()
             # update progressbar
-            progressbar.update(number_succeed_read)
+            progressbar.update()
 
 
         # shuffle X, Y and make X and Y np-arrays
