@@ -7,9 +7,11 @@ import random
 from itertools import product
 import mtp
 from mtp import get_am_filename
-import tflearn
+from mtp import mtp_data_generator
 import copy
+from sklearn.utils import shuffle
 from scipy.misc import imsave
+import tflearn
 from tflearn.layers.core import input_data, dropout, fully_connected
 from tflearn.layers.conv import conv_3d, max_pool_3d
 from tflearn.layers.conv import conv_2d, max_pool_2d
@@ -17,8 +19,6 @@ from tflearn.layers.normalization import l2_normalize
 from tflearn.layers.estimator import regression
 from tflearn.data_preprocessing import ImagePreprocessing
 from tflearn.data_augmentation import ImageAugmentation
-import multiprocessing as mp
-from multiprocessing import Process, Queue, Lock, Value, Array, Manager
 
 sys.path.append('./FlyLIB/')
 import neuron
@@ -30,14 +30,12 @@ DIRECTORY_TRAIN_OUTPUT = '/home/toosyou/ext/train_output/'
 NUMBER_WORKERS = 4
 
 SIZE_BATCH = 12
-SIZE_VALIDATION = 12
+SIZE_VALIDATION = 1
+N_EPOCH_BATCH = 25
+N_SPLIT_BATCH = 8
 
 SIZE_INPUT_DATA = [200, 200, 21]
-SIZE_INPUT_RESIZE = SIZE_INPUT_DATA + [200]
 SIZE_OUTPUT_DATA = [100, 100]
-
-index_block_postive_sofar = 0
-index_block_negtive_sofar = 0
 
 def build_cnn_model():
     network_input_size = [None] + SIZE_INPUT_DATA # None 200 200 21
@@ -98,12 +96,6 @@ def neuron_resize_test():
         test_tips_vol.write_am(original_neuron_name+'_target_resized.am')
     return
 
-def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue, index_worker = -1):
-    result = list(input_mtp.get_sliced_data(index_start, size, size_input, size_output) )
-    print('worder '+str(index_worker)+' done! index_start: '+str(index_start))
-    return_queue.put( result )
-    return
-
 def save_valids(model, index, X, Y, size=-1, is_training_set=False):
     # predict 'size' X or all X
     if size != -1:
@@ -122,6 +114,27 @@ def save_valids(model, index, X, Y, size=-1, is_training_set=False):
         imsave(directory+str(index)+'_'+str(i)+'_output.png', np.array(output).reshape(SIZE_OUTPUT_DATA))
     return
 
+def train_batch(model, X, Y, validation_X, validation_Y):
+    size_training = len(Y)
+    size_batch = int(size_training/N_SPLIT_BATCH)
+    for epoch in range(N_EPOCH_BATCH):
+        shuffle(X, Y) # shuffle data every epoch
+        for iteration in range(N_SPLIT_BATCH):
+            index_start = iteration*size_batch
+            index_end = (iteration+1)*size_batch
+            # check index bound
+            if index_end > size_training:
+                index_end = size_training
+            # split batch
+            batch_X = X[ index_start: index_end ]
+            batch_Y = Y[ index_start: index_end ]
+            model.fit(batch_X, batch_Y, n_epoch=5,
+                        batch_size=size_batch,
+                        validation_set=(validation_X, validation_Y),
+                        show_metric=True)
+    return
+
+
 def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, init_index_train=0):
     # build convolutional neural network with tflearn
     model, network = build_cnn_model()
@@ -136,19 +149,15 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
     train_mtp = mtp.MTP('train.mtp')
     test_mtp = mtp.MTP('test.mtp')
 
-    # make validation data with first 100 neurals from test
-    print("Reading validation :")
-    valid_manager = Manager()
-    valid_queue = valid_manager.Queue()
-    valid_worker = Process(target=mtp_get_sliced_data,
-                            args=(test_mtp, 0, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, valid_queue))
-    valid_worker.start()
-    print('started')
-    # catch validations
-    validation_X, validation_Y, _, _ = valid_queue.get()
-    print(len(validation_Y))
+    # init generator
+    train_data_generator = mtp_data_generator(train_mtp, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA)
+    test_data_generator = mtp_data_generator(test_mtp, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA)
 
-    return
+    # make validation data with first 100 neurals from test
+    print("Reading validation set:")
+    test_data_generator.start(number_worker=1)
+    print("Reading training set:")
+    train_data_generator.start(number_worker=NUMBER_WORKERS)
 
     # make training batch and train
     makedirs(DIRECTORY_MODELS, exist_ok=True)
@@ -157,34 +166,19 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
     index_fit = init_index_fit
     index_train = init_index_train
 
-    # create NUMBER_WORKERS processes to read first batch
-    train_queue = Queue()
-    train_reading_workers = list()
-    for i in range(NUMBER_WORKERS):
-        read_process = Process(target=mtp_get_sliced_data,
-                             args=(train_mtp, index_train, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, train_queue, i))
-        index_train += SIZE_BATCH
-        train_reading_workers.append(read_process)
-        read_process.start()
+    validation_X, validation_Y = test_data_generator.get(do_next=False)
+    print('Validation data gotten!')
 
     # start training
     while True:
         print('index_fit:', index_fit)
         # get previous reading result
-        training_batch_X, training_batch_Y, _, index_worker = train_queue.get()
-        print('Get worker:', index_worker, 'Size:', len(training_batch_Y) )
-        # begin reading process
-        read_process = Process(target=mtp_get_sliced_data,
-                                 args=(train_mtp, index_train, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, train_queue, index_worker))
-        index_train += SIZE_BATCH
-        train_reading_workers[index_worker] = read_process
-        read_process.start()
+        training_batch_X, training_batch_Y = train_data_generator.get()
+        print('Training batch data gotten!')
+        print(training_batch_X.shape, training_batch_Y.shape)
 
         # do cnn thing
-        model.fit(training_batch_X, training_batch_Y, n_epoch=25,
-                    batch_size=int(len(training_batch_Y)/8),
-                    validation_set=(validation_X, validation_Y),
-                    show_metric=True)
+        train_batch(model, training_batch_X, training_batch_Y, validation_X, validation_Y)
         if index_fit % 5 == 0:
             model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
 

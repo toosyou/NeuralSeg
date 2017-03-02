@@ -1,4 +1,5 @@
 import scipy
+from scipy.misc import imsave
 import numpy as np
 import progressbar as pb
 import os
@@ -8,6 +9,8 @@ from sklearn.utils import shuffle
 from random import random
 import tqdm
 from tqdm import tqdm, trange
+import multiprocessing as mp
+from multiprocessing import Process
 
 import sys
 sys.path.append('./FlyLIB/')
@@ -241,3 +244,79 @@ class MTP:
 
     def __getitem__(self, index):
         return self._tips[index]
+
+def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue, return_lock, index_worker = -1):
+    X, Y, _ = input_mtp.get_sliced_data(index_start, size, size_input, size_output)
+    print('Worker no.', index_worker, 'done! index_start:', index_start)
+
+    # only one worker can output result at a time after the parent gets the result
+    if return_lock.acquire():
+        size_return = len(X)
+        return_queue.put(index_worker)
+        return_queue.put(size_return)
+        for i in range(size_return):
+            return_queue.put(X[i])
+        for i in range(size_return):
+            return_queue.put(Y[i])
+
+    else: # unexpected
+        print('return lock acquiring error!')
+        print('index_start:', index_start)
+        print('size:', size)
+        print('index_worker:', index_worker)
+
+    return
+
+class mtp_data_generator:
+    def __init__(self, mtp, size_data, size_input, size_output):
+        self._mtp = mtp
+        self._size_data = size_data
+        self._size_input = size_input
+        self._size_output = size_output
+        self._index_now = 0
+        self._workers = list()
+        self._return_queue = mp.Queue()
+        self._return_lock = mp.Lock()
+
+    def _add_worker(self, index_worker):
+        self._workers[index_worker] = Process(target=mtp_get_sliced_data,
+                                                args=(self._mtp, self._index_now, self._size_data,
+                                                        self._size_input, self._size_output, self._return_queue, self._return_lock, index_worker))
+        self._index_now += self._size_data
+        self._workers[index_worker].start()
+        return
+
+    def start(self, number_worker):
+        self._workers = [None] * number_worker
+        for i in range(number_worker):
+            self._add_worker(i)
+        return
+
+    def get(self, number_worker=1, do_next=True):
+        # get single data
+        X = list()
+        Y = list()
+
+        # get number_worker workers' data
+        for i in range(number_worker):
+            index_worker = self._return_queue.get()
+            size_data = self._return_queue.get()
+            # print out status
+            print('Get worker no.', index_worker, 'with size:', size_data)
+            # catch data sequentially
+            for j in range(size_data):
+                X.append( self._return_queue.get() )
+            for j in range(size_data):
+                Y.append( self._return_queue.get() )
+
+            # release return lock for another child to put result in return queue
+            self._return_lock.release()
+
+            if do_next: # get next worker to work
+                self._add_worker(index_worker)
+
+        # make them numpy arrays
+        X = np.array(X)
+        Y = np.array(Y)
+
+        return X, Y
