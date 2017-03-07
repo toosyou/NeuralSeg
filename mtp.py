@@ -125,9 +125,13 @@ class MTP:
         target.read_from_points(self._tips[index].coordinates)
         return target
 
-    def get_sliced_data(self, index_start, size, size_input, size_output):
+    def get_sliced_data(self, index_start, size, size_input, size_output, size_resize_input=None):
         X = list()
         Y = list()
+
+        if not size_resize_input:
+            size_resize_input = [size_input[0], size_input[1], -1]
+        size_resize_output = [size_output[0], size_output[1], size_resize_input[2]]
 
         # change directory to ams
         original_directory = os.getcwd()
@@ -150,8 +154,12 @@ class MTP:
             target = self.get_target(raw, index_so_far)
 
             # resize raw and target data xy to fit size_input
-            raw.resize([size_input[0], size_input[1], -1], order=1) # bilinear
-            target.resize([size_output[0], size_output[1], -1], order=0) # nestest
+            raw.resize(size_resize_input, order=1) # bilinear
+            target.resize(size_resize_output, order=1) # bilinear
+
+            # binarize raw and target
+            raw.binarize(0.8)
+            target.binarize(0.001)
 
             # slice raw by z-axis
             for z in range(raw.size[2]):
@@ -190,6 +198,9 @@ class MTP:
         X, Y = shuffle(X, Y)
         X = np.array(X)
         Y = np.array(Y)
+
+        # reshape X to 4d for 5d tensor in 3d-CNN model
+        X = X.reshape( list(X.shape) + [1] )
 
         # change directory back to original one
         os.chdir(original_directory)
@@ -245,13 +256,17 @@ class MTP:
     def __getitem__(self, index):
         return self._tips[index]
 
-def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, return_queue, return_lock, index_worker = -1):
-    X, Y, _ = input_mtp.get_sliced_data(index_start, size, size_input, size_output)
+def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, size_resize_input, return_queue, return_lock, index_worker = -1, max_sample=-1):
+    X, Y, _ = input_mtp.get_sliced_data(index_start, size, size_input, size_output, size_resize_input)
     print('Worker no.', index_worker, 'done! index_start:', index_start)
+
+    if max_sample != -1 and len(Y) > max_sample:
+        X = X[0:max_sample]
+        Y = Y[0:max_sample]
 
     # only one worker can output result at a time after the parent gets the result
     if return_lock.acquire():
-        size_return = len(X)
+        size_return = len(Y)
         return_queue.put(index_worker)
         return_queue.put(size_return)
         for i in range(size_return):
@@ -268,21 +283,25 @@ def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, r
     return
 
 class mtp_data_generator:
-    def __init__(self, mtp, size_data, size_input, size_output):
+    def __init__(self, mtp, size_data, size_input, size_output, size_resize_input, max_sample=-1):
         self._mtp = mtp
         self._size_data = size_data
         self._size_input = size_input
         self._size_output = size_output
+        self._size_resize_input = size_resize_input
+        self._max_sample = max_sample
         self._index_now = 0
         self._workers = list()
         self._return_queue = mp.Queue()
         self._return_lock = mp.Lock()
+        self._return_lock.acquire() # no data transfer if parent doesn't catch data
 
     def _add_worker(self, index_worker):
         self._workers[index_worker] = Process(target=mtp_get_sliced_data,
                                                 args=(self._mtp, self._index_now, self._size_data,
-                                                        self._size_input, self._size_output, self._return_queue, self._return_lock, index_worker))
-        self._index_now += self._size_data
+                                                        self._size_input, self._size_output, self._size_resize_input,
+                                                        self._return_queue, self._return_lock, index_worker, self._max_sample))
+        self._index_now = (self._index_now + self._size_data) % self._mtp.size()
         self._workers[index_worker].start()
         return
 
@@ -299,18 +318,19 @@ class mtp_data_generator:
 
         # get number_worker workers' data
         for i in range(number_worker):
+
+            # release return lock for another child to put result in return queue
+            self._return_lock.release()
+
             index_worker = self._return_queue.get()
             size_data = self._return_queue.get()
             # print out status
             print('Get worker no.', index_worker, 'with size:', size_data)
             # catch data sequentially
-            for j in range(size_data):
+            for j in trange(size_data, desc='Reading X'):
                 X.append( self._return_queue.get() )
-            for j in range(size_data):
+            for j in trange(size_data, desc='Reading Y'):
                 Y.append( self._return_queue.get() )
-
-            # release return lock for another child to put result in return queue
-            self._return_lock.release()
 
             if do_next: # get next worker to work
                 self._add_worker(index_worker)
