@@ -7,18 +7,12 @@ import random
 from itertools import product
 import mtp
 from mtp import get_am_filename
-from mtp import mtp_data_generator
+from mtp import MTP_data_generator
 import copy
 from sklearn.utils import shuffle
 from scipy.misc import imsave
-import tflearn
-from tflearn.layers.core import input_data, dropout, fully_connected, flatten, reshape
-from tflearn.layers.conv import conv_3d, max_pool_3d
-from tflearn.layers.conv import conv_2d, max_pool_2d
-from tflearn.layers.normalization import l2_normalize
-from tflearn.layers.estimator import regression
-from tflearn.data_preprocessing import ImagePreprocessing
-from tflearn.data_augmentation import ImageAugmentation
+
+from models import get_slicing_model
 
 sys.path.append('./FlyLIB/')
 import neuron
@@ -29,7 +23,7 @@ DIRECTORY_VALIDS = '/home/toosyou/ext/valids/'
 DIRECTORY_TRAIN_OUTPUT = '/home/toosyou/ext/train_output/'
 NUMBER_WORKERS = 3
 
-SIZE_BATCH = 12
+SIZE_BATCH = 1
 SIZE_VALIDATION = 1
 MAX_SAMPLE_VALIDATION = 24
 MAX_SAMPLE_PER_TRAINING_NEURON = 32
@@ -42,34 +36,6 @@ SIZE_RESIZE_INPUT_Z = 100
 SIZE_INPUT_DATA = [100, 100, 21]
 SIZE_RESIZE_INPUT = [ SIZE_INPUT_DATA[0], SIZE_INPUT_DATA[1], SIZE_RESIZE_INPUT_Z ]
 SIZE_OUTPUT_DATA = [25, 25]
-
-def build_cnn_model():
-    network_input_size = [None] + SIZE_INPUT_DATA + [1] # None 100 100 21 1
-
-    img_prep = ImagePreprocessing()
-    #img_prep.add_featurewise_zero_center()
-    #img_prep.add_featurewise_stdnorm()
-
-    # build CNN
-    network = input_data(shape=network_input_size,
-                            data_preprocessing=img_prep) # None 100 100 21 1
-    network = conv_3d(network, 32, 3, activation='prelu')
-    network = max_pool_3d(network, 2, strides=2, padding='same') # None 32 50 50 11 1
-    network = conv_3d(network, 32, 3, activation='prelu')
-    network = max_pool_3d(network, 2, strides=2, padding='same') # None 32 25 25 6 1
-    network = conv_3d(network, 32, 3, activation='prelu') # None 32 25 25 6 1
-    network = max_pool_3d(network, 2, strides=[1, 1, 1, 2, 1], padding='same') # None 32 25 25 3 1
-    network = conv_3d(network, 128, 5, activation='prelu')
-    network = conv_3d(network, 128, 5, activation='prelu')
-    # network = conv_3d(network, 128, 5, activation='prelu')
-    network = conv_3d(network, 1, [1, 1, 3], activation='prelu', padding='valid')
-    network = flatten(network)
-    # network = fully_connected(network, np.prod(SIZE_OUTPUT_DATA), activation='prelu')
-    network = regression(network, optimizer='adam', loss='binary_crossentropy')
-
-    model = tflearn.DNN(network)
-
-    return model, network
 
 def neuron_resize_test():
     train_mtp = mtp.MTP('train.mtp')
@@ -149,8 +115,8 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
     test_mtp = mtp.MTP('test.mtp')
 
     # init generator
-    train_data_generator = mtp_data_generator(train_mtp, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT, MAX_SAMPLE_TRAINING)
-    test_data_generator = mtp_data_generator(test_mtp, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT)
+    train_data_generator = MTP_data_generator(train_mtp, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT, MAX_SAMPLE_TRAINING)
+    test_data_generator = MTP_data_generator(test_mtp, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT)
 
     # start reading validation and training set
     print("Reading validation set:")
@@ -159,7 +125,7 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
     train_data_generator.start(number_worker=NUMBER_WORKERS)
 
     # build convolutional neural network with tflearn
-    model, network = build_cnn_model()
+    model, network = get_slicing_model(SIZE_INPUT_DATA, SIZE_OUTPUT_DATA)
     print("Done building cnn model!")
 
     # continue training with init weights loaded

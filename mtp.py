@@ -282,7 +282,7 @@ def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, s
 
     return
 
-class mtp_data_generator:
+class MTP_data_generator:
     def __init__(self, mtp, size_data, size_input, size_output, size_resize_input, max_sample=-1):
         self._mtp = mtp
         self._size_data = size_data
