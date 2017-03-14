@@ -11,7 +11,7 @@ from mtp import MTP_slicing_dg, MTP_blocking_dg
 import copy
 from sklearn.utils import shuffle
 from scipy.misc import imsave
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, accuracy_score
 
 from models import get_slicing_model, get_blocking_model
 
@@ -80,10 +80,19 @@ def save_report(model, index, X, Y, size=-1):
     if size != -1:
         X = X[0:size]
         Y = Y[0:size]
-    prediction = np.array(model.predict_label(X))
+
+    # get predictions
+    prediction = list()
+    for this_x in X:
+        this_x = this_x.reshape([1]+list(this_x.shape))
+        prediction.extend( model.predict_label(this_x) )
+    prediction = np.array(prediction)
+
+    # output evaluations
     with open(ADDRESS_REPORTS, 'a') as file_reports:
-        file_reports.write( 'index_fit: '+str(index)+'\n' )
-        file_reports.write( classification_report(Y[:,0], prediction[:,0], digits=4)+'\n\n' )
+        file_reports.write( 'index_fit: ' + str(index) + '\n' )
+        file_reports.write( 'Accuract: ' + str(accuracy_score(Y[:,0], prediction[:,0])) + '\n' )
+        file_reports.write( classification_report(Y[:,0], prediction[:,0], digits=4) + '\n\n' )
     return
 
 def train_batch(model, X, Y, validation_X, validation_Y):
@@ -194,7 +203,7 @@ def main_slicing_trainer(to_continue=False, name_model='checkpoint', init_index_
     # final join, WIP
     return
 
-def main_blocking_trainer():
+def main_blocking_trainer(index_fit_start=0):
 
     # magic numbers
     NUMBER_WORKERS_TRAIN = 3
@@ -210,7 +219,10 @@ def main_blocking_trainer():
     test_mtp = mtp.MTP('test.mtp')
 
     train_data_generator = MTP_blocking_dg(train_mtp, NUMBER_NEURON_TRAIN, SIZE_INPUT_BLOCK, STRIDE_INPUT_BLOCK)
-    test_data_generator = MTP_blocking_dg(test_mtp, NUMBER_NEURON_TEST, SIZE_INPUT_BLOCK, STRIDE_INPUT_BLOCK)
+    test_data_generator  = MTP_blocking_dg(test_mtp, NUMBER_NEURON_TEST, SIZE_INPUT_BLOCK, STRIDE_INPUT_BLOCK)
+
+    # continue training
+    train_data_generator.set_start_index(index_fit_start * NUMBER_NEURON_TRAIN)
 
     # start reading validation and training set
     print("Reading validation set:")
@@ -222,13 +234,19 @@ def main_blocking_trainer():
     model, network = get_blocking_model([SIZE_INPUT_BLOCK]*3)
     print("Done building cnn model!")
 
+    # continue training
+    if index_fit_start != 0:
+        tfm_address = DIRECTORY_MODELS + str(index_fit_start) + '.tfm'
+        model.load( tfm_address )
+        print('Model read from '+ tfm_address + ' !')
+
     # get validation
     validation_X, validation_Y = test_data_generator.get(do_next=False)
     print('Validation data gotten!')
 
     # start training
     makedirs(DIRECTORY_MODELS, exist_ok=True)
-    index_fit = 0
+    index_fit = index_fit_start+1
     while True:
         print('index_fit:', index_fit)
         # get previous reading result
@@ -243,13 +261,12 @@ def main_blocking_trainer():
 
         # do cnn thing
         train_batch(model, training_batch_X, training_batch_Y, sampled_validation_X, sampled_validation_Y)
-        if index_fit % 5 == 0:
-            model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
+        model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
 
         # evaluate
-        save_report(model, index_fit, validation_X, validation_Y, MAX_SAMPLE_VALIDATION)
+        save_report(model, index_fit, validation_X, validation_Y)
 
         index_fit += 1
 
 if __name__ == '__main__':
-    main_blocking_trainer()
+    main_blocking_trainer(50)

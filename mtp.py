@@ -452,6 +452,10 @@ class MTP_blocking_dg:
         self._return_lock = mp.Lock()
         self._return_lock.acquire() # no data transfer if parent doesn't catch data
 
+    def set_start_index(self, index):
+        self._index_now = index
+        return
+
     def _add_worker(self, index_worker):
         self._workers[index_worker] = Process(target=mtp_get_blocked_data,
                                                 args=(self._mtp, self._index_now, self._number_neuron,
@@ -496,5 +500,4 @@ class MTP_blocking_dg:
         X = np.array(X)
         Y = np.array(Y)
         Y = to_categorical(Y, 2)
-
         return X, Y
