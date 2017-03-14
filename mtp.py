@@ -11,6 +11,7 @@ import tqdm
 from tqdm import tqdm, trange
 import multiprocessing as mp
 from multiprocessing import Process
+from tflearn.data_utils import to_categorical
 
 import sys
 sys.path.append('./FlyLIB/')
@@ -115,15 +116,84 @@ class MTP:
         return
 
     def read_neuron(self, index):
+        # change directory to ams
+        original_directory = os.getcwd()
+        os.chdir(DIRECTORY_AMS)
+
         points = self._tips[index]
         am_name = get_am_filename(points.name)
-        return neuron.NeuronRaw(am_name)
+        rtn = neuron.NeuronRaw(am_name)
+
+        # change directory back to the original one
+        os.chdir(original_directory)
+
+        return rtn
 
     def get_target(self, neuron, index):
         target = neuron.copy()
         target.clean_intensity()
         target.read_from_points(self._tips[index].coordinates)
         return target
+
+    def get_blocked_data(self, index_start, number_neuron, size_block=64, stride=32, balance=True, augmentation=True):
+        X_positive = list()
+        X_negative = list()
+        X = list()
+        y = list()
+
+        progressbar = tqdm(total=number_neuron, desc='Blocklize Neuron '+str(index_start))
+        index_so_far = index_start
+        number_neuron_read = 0
+        while number_neuron_read < number_neuron:
+            # read neural raw data
+            raw = self.read_neuron(index_so_far)
+            if raw.valid == False: # cannot read from am_name
+                continue
+            else:
+                number_neuron_read += 1
+
+            # blocklize
+            for dx in range(-stride, raw.size[0]+stride+1, stride):
+                for dy in range(-stride, raw.size[1]+stride+1, stride):
+                    for dz in range(-stride, raw.size[2]+stride+1, stride):
+                        # get a block
+                        block_neuron = raw.block((dx, dy, dz), [size_block]*3)
+                        # if empty dont care
+                        if block_neuron.is_empty():
+                            continue
+                        # check if it's positive or not
+                        if block_neuron.points_in_the_center(self._tips[index_so_far]):
+                            if augmentation: # mirror all direction
+                                for px in range(2):
+                                    for py in range(2):
+                                        for pz in range(2):
+                                            X_positive.append(copy.deepcopy( block_neuron.mirror((px, py, pz)).intensity ))
+                            else:
+                                X_positive.append(copy.deepcopy(block_neuron.intensity))
+                        else:
+                            X_negative.append(copy.deepcopy(block_neuron.intensity))
+
+            # increase index_so_far and round with number of all neurons
+            index_so_far = (index_so_far + 1) % self.size()
+            progressbar.update()
+
+        # make number of samples in positive and negative equal
+        if balance:
+            if len(X_positive) < len(X_negative):
+                np.random.shuffle(X_negative)
+                X_negative = X_negative[0:len(X_positive)]
+            else:
+                np.random.shuffle(X_positive)
+                X_positive = X_positive[0:len(X_negative)]
+
+        X = X_positive + X_negative
+        Y = [1]*len(X_positive) + [0]*len(X_negative)
+
+        X, Y = shuffle(X, Y)
+        X = np.array(X)
+        Y = np.array(Y)
+        X = X.reshape(list(X.shape)+[1])
+        return X, Y
 
     def get_sliced_data(self, index_start, size, size_input, size_output, size_resize_input=None):
         X = list()
@@ -282,7 +352,32 @@ def mtp_get_sliced_data(input_mtp, index_start, size, size_input, size_output, s
 
     return
 
-class MTP_data_generator:
+def mtp_get_blocked_data(input_mtp, index_start, number_neuron, size_block, stride, balance, augmentation, return_queue, return_lock, index_worker=-1, max_sample=-1):
+    X, Y = input_mtp.get_blocked_data(index_start, number_neuron, size_block, stride, balance, augmentation)
+    print('Worker no.', index_worker, 'done! index_start:', index_start)
+    if max_sample != -1 and len(Y) > max_sample:
+        X = X[0:max_sample]
+        Y = Y[0:max_sample]
+
+    # only one worker can output result at a time after the parent gets the result
+    if return_lock.acquire():
+        size_return = len(Y)
+        return_queue.put(index_worker)
+        return_queue.put(size_return)
+        for i in range(size_return):
+            return_queue.put(X[i])
+        for i in range(size_return):
+            return_queue.put(Y[i])
+
+    else: # unexpected
+        print('return lock acquiring error!')
+        print('index_start:', index_start)
+        print('size:', number_neuron)
+        print('index_worker:', index_worker)
+
+    return
+
+class MTP_slicing_dg:
     def __init__(self, mtp, size_data, size_input, size_output, size_resize_input, max_sample=-1):
         self._mtp = mtp
         self._size_data = size_data
@@ -338,5 +433,68 @@ class MTP_data_generator:
         # make them numpy arrays
         X = np.array(X)
         Y = np.array(Y)
+
+        return X, Y
+
+class MTP_blocking_dg:
+    def __init__(self, mtp, number_neuron, size_block=64, stride=32, balance=True, augmentation=True, max_sample=-1):
+        self._mtp = mtp
+        self._number_neuron = number_neuron
+        self._size_block = size_block
+        self._stride = stride
+        self._balance = balance
+        self._augmentation = augmentation
+        self._max_sample = max_sample
+
+        self._index_now = 0
+        self._workers = list()
+        self._return_queue = mp.Queue()
+        self._return_lock = mp.Lock()
+        self._return_lock.acquire() # no data transfer if parent doesn't catch data
+
+    def _add_worker(self, index_worker):
+        self._workers[index_worker] = Process(target=mtp_get_blocked_data,
+                                                args=(self._mtp, self._index_now, self._number_neuron,
+                                                        self._size_block, self._stride, self._balance, self._augmentation,
+                                                        self._return_queue, self._return_lock, index_worker, self._max_sample))
+        self._index_now = (self._index_now + self._number_neuron) % self._mtp.size()
+        self._workers[index_worker].start()
+        return
+
+    def start(self, number_worker):
+        self._workers = [None] * number_worker
+        for i in range(number_worker):
+            self._add_worker(i)
+        return
+
+    def get(self, number_worker=1, do_next=True):
+        # get single data
+        X = list()
+        Y = list()
+
+        # get number_worker workers' data
+        for i in range(number_worker):
+
+            # release return lock for another child to put result in return queue
+            self._return_lock.release()
+
+            index_worker = self._return_queue.get()
+            size_data = self._return_queue.get()
+            # print out status
+            print('Get worker no.', index_worker, 'with size:', size_data)
+            # catch data sequentially
+            for j in trange(size_data, desc='Reading X'):
+                X.append( self._return_queue.get() )
+            for j in trange(size_data, desc='Reading Y'):
+                Y.append( self._return_queue.get() )
+
+            if do_next: # get next worker to work
+                self._add_worker(index_worker)
+
+        # make them numpy arrays
+        X, Y = shuffle(X, Y)
+        X = np.array(X)
+        Y = np.array(Y)
+        Y = to_categorical(Y, 2)
 
         return X, Y

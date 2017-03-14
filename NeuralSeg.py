@@ -7,12 +7,13 @@ import random
 from itertools import product
 import mtp
 from mtp import get_am_filename
-from mtp import MTP_data_generator
+from mtp import MTP_slicing_dg, MTP_blocking_dg
 import copy
 from sklearn.utils import shuffle
 from scipy.misc import imsave
+from sklearn.metrics import classification_report
 
-from models import get_slicing_model
+from models import get_slicing_model, get_blocking_model
 
 sys.path.append('./FlyLIB/')
 import neuron
@@ -21,21 +22,8 @@ DIRECTORY_AMS = "/home/toosyou/ext/neuron_data/resampled_111_slow/"
 DIRECTORY_MODELS = '/home/toosyou/ext/models/'
 DIRECTORY_VALIDS = '/home/toosyou/ext/valids/'
 DIRECTORY_TRAIN_OUTPUT = '/home/toosyou/ext/train_output/'
-NUMBER_WORKERS = 3
+ADDRESS_REPORTS = './reports.log'
 
-SIZE_BATCH = 1
-SIZE_VALIDATION = 1
-MAX_SAMPLE_VALIDATION = 24
-MAX_SAMPLE_PER_TRAINING_NEURON = 32
-MAX_SAMPLE_TRAINING = MAX_SAMPLE_PER_TRAINING_NEURON * SIZE_BATCH
-N_EPOCH_BATCH = 5
-SIZE_MINI_BATCH = 32
-N_EPOCH_MINI_BATCH = 1
-
-SIZE_RESIZE_INPUT_Z = 100
-SIZE_INPUT_DATA = [100, 100, 21]
-SIZE_RESIZE_INPUT = [ SIZE_INPUT_DATA[0], SIZE_INPUT_DATA[1], SIZE_RESIZE_INPUT_Z ]
-SIZE_OUTPUT_DATA = [25, 25]
 
 def neuron_resize_test():
     train_mtp = mtp.MTP('train.mtp')
@@ -88,11 +76,26 @@ def save_valids(model, index, X, Y, size=-1, is_training_set=False):
         imsave(directory+str(index)+'_'+str(i)+'_output.png', np.array(output).reshape(SIZE_OUTPUT_DATA))
     return
 
+def save_report(model, index, X, Y, size=-1):
+    if size != -1:
+        X = X[0:size]
+        Y = Y[0:size]
+    prediction = np.array(model.predict_label(X))
+    with open(ADDRESS_REPORTS, 'a') as file_reports:
+        file_reports.write( 'index_fit: '+str(index)+'\n' )
+        file_reports.write( classification_report(Y[:,0], prediction[:,0], digits=4)+'\n\n' )
+    return
+
 def train_batch(model, X, Y, validation_X, validation_Y):
+    # magic numbers
+    N_EPOCH_BATCH = 1
+    SIZE_MINI_BATCH = 32
+    N_EPOCH_MINI_BATCH = 5
+
     size_training = len(Y)
     number_batch = int(size_training/SIZE_MINI_BATCH)
     for epoch in range(N_EPOCH_BATCH):
-        shuffle(X, Y) # shuffle data every epoch
+        X, Y = shuffle(X, Y) # shuffle data every epoch
         for iteration in range(number_batch):
             index_start = iteration*SIZE_MINI_BATCH
             index_end = index_start + SIZE_MINI_BATCH
@@ -108,15 +111,29 @@ def train_batch(model, X, Y, validation_X, validation_Y):
                         show_metric=True)
     return
 
-def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, init_index_train=0):
+def main_slicing_trainer(to_continue=False, name_model='checkpoint', init_index_fit=0, init_index_train=0):
+
+    # magic numbers
+    NUMBER_WORKERS = 3
+
+    SIZE_BATCH = 1
+    SIZE_VALIDATION = 1
+    MAX_SAMPLE_VALIDATION = 24
+    MAX_SAMPLE_PER_TRAINING_NEURON = 32
+    MAX_SAMPLE_TRAINING = MAX_SAMPLE_PER_TRAINING_NEURON * SIZE_BATCH
+
+    SIZE_RESIZE_INPUT_Z = 100
+    SIZE_INPUT_DATA = [100, 100, 21]
+    SIZE_RESIZE_INPUT = [ SIZE_INPUT_DATA[0], SIZE_INPUT_DATA[1], SIZE_RESIZE_INPUT_Z ]
+    SIZE_OUTPUT_DATA = [25, 25]
 
     # prepare data
     train_mtp = mtp.MTP('train.mtp')
     test_mtp = mtp.MTP('test.mtp')
 
     # init generator
-    train_data_generator = MTP_data_generator(train_mtp, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT, MAX_SAMPLE_TRAINING)
-    test_data_generator = MTP_data_generator(test_mtp, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT)
+    train_data_generator = MTP_slicing_dg(train_mtp, SIZE_BATCH, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT, MAX_SAMPLE_TRAINING)
+    test_data_generator = MTP_slicing_dg(test_mtp, SIZE_VALIDATION, SIZE_INPUT_DATA, SIZE_OUTPUT_DATA, SIZE_RESIZE_INPUT)
 
     # start reading validation and training set
     print("Reading validation set:")
@@ -156,7 +173,7 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
         print('shrinked shape:', training_batch_X.shape, training_batch_Y.shape)
 
         # sample validation
-        shuffle(validation_X, validation_Y)
+        validation_X, validation_Y = shuffle(validation_X, validation_Y)
         sampled_validation_X = validation_X[0:MAX_SAMPLE_VALIDATION]
         sampled_validation_Y = validation_Y[0:MAX_SAMPLE_VALIDATION]
 
@@ -177,5 +194,62 @@ def main_train(to_continue=False, name_model='checkpoint', init_index_fit=0, ini
     # final join, WIP
     return
 
+def main_blocking_trainer():
+
+    # magic numbers
+    NUMBER_WORKERS_TRAIN = 3
+    NUMBER_NEURON_TRAIN = 5
+    SIZE_INPUT_BLOCK = 32
+    STRIDE_INPUT_BLOCK = 16
+
+    NUMBER_NEURON_TEST = 1
+    MAX_SAMPLE_VALIDATION = 32
+
+    # prepare data
+    train_mtp = mtp.MTP('train.mtp')
+    test_mtp = mtp.MTP('test.mtp')
+
+    train_data_generator = MTP_blocking_dg(train_mtp, NUMBER_NEURON_TRAIN, SIZE_INPUT_BLOCK, STRIDE_INPUT_BLOCK)
+    test_data_generator = MTP_blocking_dg(test_mtp, NUMBER_NEURON_TEST, SIZE_INPUT_BLOCK, STRIDE_INPUT_BLOCK)
+
+    # start reading validation and training set
+    print("Reading validation set:")
+    test_data_generator.start(number_worker=1)
+    print("Reading training set:")
+    train_data_generator.start(number_worker=NUMBER_WORKERS_TRAIN)
+
+    # build convolutional neural network with tflearn
+    model, network = get_blocking_model([SIZE_INPUT_BLOCK]*3)
+    print("Done building cnn model!")
+
+    # get validation
+    validation_X, validation_Y = test_data_generator.get(do_next=False)
+    print('Validation data gotten!')
+
+    # start training
+    makedirs(DIRECTORY_MODELS, exist_ok=True)
+    index_fit = 0
+    while True:
+        print('index_fit:', index_fit)
+        # get previous reading result
+        training_batch_X, training_batch_Y = train_data_generator.get()
+        print('Training batch data gotten!')
+        print('shrinked shape:', training_batch_X.shape, training_batch_Y.shape)
+
+        # sample validation
+        validation_X, validation_Y = shuffle(validation_X, validation_Y)
+        sampled_validation_X = validation_X[0:MAX_SAMPLE_VALIDATION]
+        sampled_validation_Y = validation_Y[0:MAX_SAMPLE_VALIDATION]
+
+        # do cnn thing
+        train_batch(model, training_batch_X, training_batch_Y, sampled_validation_X, sampled_validation_Y)
+        if index_fit % 5 == 0:
+            model.save(DIRECTORY_MODELS + str(index_fit) + '.tfm')
+
+        # evaluate
+        save_report(model, index_fit, validation_X, validation_Y, MAX_SAMPLE_VALIDATION)
+
+        index_fit += 1
+
 if __name__ == '__main__':
-    main_train()
+    main_blocking_trainer()
